@@ -2,16 +2,26 @@ const { Parser, tokTypes: tt } = require('acorn');
 const walk = require('acorn-walk');
 const recast = require('recast');
 
+/*
+Limitation:
+
+MemberExpression [ SliceExpression ] is transformed into something like:
+MemberExpression.object.slice ( SliceExpression.startIndex, SliceExpression.endIndex)
+So it won't use SliceExpression.step, and will only work with an instance of Array or String
+which have `slice` in their prototype, not an ArrayLike object
+
+*/
+
 function parseSliceExpressionPlugin(Parser) {
   return class extends Parser {
-    // Parse a slice (`start:end:step`) operator.
-    parseMaybeSlice(noIn, refDestructuringErrors) {
+    // Parse a slice (`start:end:step`) operator or a conditional (`cond ? a : b`) operator
+    parseMaybeConditional(noIn, refDestructuringErrors) {
       let startPos = this.start, startLoc = this.startLoc
       let startIndex, endIndex, step; // can't name them 'start', 'end' because those are Parser properties
       if (!this.eat(tt.colon)) {
-        startIndex = this.parseMaybeConditional(noIn, refDestructuringErrors);
+        startIndex = super.parseMaybeConditional(noIn, refDestructuringErrors);
 
-        if (this.type !== tt.colon) return startIndex;
+        if (this.type !== tt.colon) return startIndex; // not a SliceExpression, return the parsed expression
 
         this.eat(tt.colon);
       }
@@ -21,7 +31,7 @@ function parseSliceExpressionPlugin(Parser) {
       let hasSecondColon = this.eat(tt.colon);
 
       if (!hasSecondColon && this.type !== tt.bracketR) {
-        endIndex = this.parseMaybeConditional(noIn, refDestructuringErrors);
+        endIndex = super.parseMaybeConditional(noIn, refDestructuringErrors);
 
         hasSecondColon = this.eat(tt.colon);
       }
@@ -30,7 +40,7 @@ function parseSliceExpressionPlugin(Parser) {
       //                                 ^
 
       if (hasSecondColon && this.type !== tt.bracketR) {
-        step = this.parseMaybeConditional(noIn, refDestructuringErrors);
+        step = super.parseMaybeConditional(noIn, refDestructuringErrors);
       }
 
       let node = this.startNodeAt(startPos, startLoc)
@@ -39,50 +49,6 @@ function parseSliceExpressionPlugin(Parser) {
       node.step = step;
       return this.finishNode(node, "SliceExpression")
     }
-
-    // copy-paste of original parseMaybeAssign except this.parseMaybeSlice instead of this.parseMaybeConditional
-    parseMaybeAssign(noIn, refDestructuringErrors, afterLeftParse) {
-      if (this.isContextual("yield")) {
-        if (this.inGenerator) return this.parseYield(noIn)
-        // The tokenizer will assume an expression is allowed after
-        // `yield`, but this isn't that kind of yield
-        else this.exprAllowed = false
-      }
-
-      let ownDestructuringErrors = false, oldParenAssign = -1, oldTrailingComma = -1, oldShorthandAssign = -1
-      if (refDestructuringErrors) {
-        oldParenAssign = refDestructuringErrors.parenthesizedAssign
-        oldTrailingComma = refDestructuringErrors.trailingComma
-        oldShorthandAssign = refDestructuringErrors.shorthandAssign
-        refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = refDestructuringErrors.shorthandAssign = -1
-      } else {
-        refDestructuringErrors = new Error()
-        ownDestructuringErrors = true
-      }
-
-      let startPos = this.start, startLoc = this.startLoc
-      if (this.type === tt.parenL || this.type === tt.name)
-        this.potentialArrowAt = this.start
-      let left = this.parseMaybeSlice(noIn, refDestructuringErrors)
-      if (afterLeftParse) left = afterLeftParse.call(this, left, startPos, startLoc)
-      if (this.type.isAssign) {
-        let node = this.startNodeAt(startPos, startLoc)
-        node.operator = this.value
-        node.left = this.type === tt.eq ? this.toAssignable(left, false, refDestructuringErrors) : left
-        if (!ownDestructuringErrors) DestructuringErrors.call(refDestructuringErrors)
-        refDestructuringErrors.shorthandAssign = -1 // reset because shorthand default was used correctly
-        this.checkLVal(left)
-        this.next()
-        node.right = this.parseMaybeAssign(noIn)
-        return this.finishNode(node, "AssignmentExpression")
-      } else {
-        if (ownDestructuringErrors) this.checkExpressionErrors(refDestructuringErrors, true)
-      }
-      if (oldParenAssign > -1) refDestructuringErrors.parenthesizedAssign = oldParenAssign
-      if (oldTrailingComma > -1) refDestructuringErrors.trailingComma = oldTrailingComma
-      if (oldShorthandAssign > -1) refDestructuringErrors.shorthandAssign = oldShorthandAssign
-      return left
-    }
   }
 }
 
@@ -90,34 +56,13 @@ const ParserWithSE = Parser.extend(
   parseSliceExpressionPlugin
 )
 
-const base = {
-  SliceExpression(node, state, c) {
-    if (node.startIndex) c(node.startIndex, state, "Expression")
-    if (node.endIndex) c(node.endIndex, state, "Expression")
-    if (node.step) c(node.step, state, "Expression")
-  }
-};
+const base = {};
 
-for (const [type, fn] of [...Object.entries(walk.base), ...Object.entries(base)]) {
+for (const [type, fn] of Object.entries(walk.base)) {
   base[type] = (node, ancestors, c) => {
     fn(node, ancestors[0] === node ? [...ancestors] : [node, ...ancestors], c);
   };
 }
-
-
-const SliceStr = `function* Slice(si, ei, step = 1) {
-  if (step < 0) for (let i = ei + step; i >= si; i += step) yield i;
-  else for (let i = si; i < ei; i += step) yield i;
-}`
-const Object__sliceStr = `Object.prototype.__slice = function (si = 0, ei = this.length, step = 1) {
-  if (si < 0) si = Math.max(si + this.length, 0);
-  if (ei < 0) ei = Math.max(ei + this.length, 0);
-  si = Math.min(si, this.length);
-  ei = Math.min(ei, this.length);
-  const a = Array.from(Slice(si, ei, step), i => this[i]);
-  return this instanceof String ? a.join('') : a;
-};`;
-
 
 function replaceNode(parent, node, newNode) {
   // locate node
@@ -139,46 +84,140 @@ function replaceNode(parent, node, newNode) {
 
 module.exports = function processSliceExpression(source) {
   const root = ParserWithSE.parse(source);
-  let needObject__slice;
 
   walk.recursive(root, [], {
+    MemberExpression: (node, ancestors, c) => {
+      if (node.property.type !== 'SliceExpression') {
+        return base.MemberExpression(node, ancestors, c);
+      }
+
+      const {
+        startIndex = { type: 'Identifier', name: 'undefined' },
+        endIndex = { type: 'Identifier', name: 'undefined' },
+      } = node.property;
+
+      const expr = {
+        type: 'CallExpression',
+        callee: {
+          type: 'MemberExpression',
+          object: node.object,
+          property: { type: 'Identifier', name: 'slice' }
+        },
+        arguments: [startIndex, endIndex]
+      }
+
+      replaceNode(ancestors[1], node, expr);
+    },
+
     SliceExpression: (node, ancestors, c) => {
       const {
         startIndex = { type: 'Identifier', name: 'undefined' },
         endIndex = { type: 'Identifier', name: 'undefined' },
+        step = { type: 'Literal', value: 1 },
       } = node;
 
-      // get closest MemberExpression,
-      const me = ancestors.find(n => n.type === 'MemberExpression');
+      const expr = {
+        type: 'CallExpression',
+        callee: {
+          type: 'FunctionExpression',
+          generator: true,
+          params: [
+            { type: 'Identifier', name: 'si' },
+            { type: 'Identifier', name: 'ei' },
+            { type: 'Identifier', name: 'step' },
+          ],
+          body: {
+            type: 'BlockStatement',
+            body: [{
+              type: 'IfStatement',
+              test: {
+                type: 'BinaryExpression',
+                left: { type: 'Identifier', name: 'step' },
+                operator: '<',
+                right: { type: 'Literal', value: 0 },
+              },
+              consequent: {
+                type: 'BlockStatement',
+                body: [{
+                  type: 'ForStatement',
+                  init: {
+                    type: 'VariableDeclaration',
+                    declarations: [{
+                      type: 'VariableDeclarator',
+                      id: { type: 'Identifier', name: 'i' },
+                      init: {
+                        type: 'BinaryExpression',
+                        left: { type: 'Identifier', name: 'ei' },
+                        operator: '+',
+                        right: { type: 'Identifier', name: 'step' },
+                      }
+                    }],
+                    kind: 'let'
+                  },
+                  test: {
+                    type: 'BinaryExpression',
+                    left: { type: 'Identifier', name: 'i' },
+                    operator: '>=',
+                    right: { type: 'Identifier', name: 'si' },
+                  },
+                  update: {
+                    type: 'AssignmentExpression',
+                    left: { type: 'Identifier', name: 'i' },
+                    operator: '+=',
+                    right: { type: 'Identifier', name: 'step' },
+                  },
+                  body: {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'YieldExpression',
+                      argument: { type: 'Identifier', name: 'i' }
+                    }
+                  }
+                }]
+              },
+              alternate: {
+                type: 'BlockStatement',
+                body: [{
+                  type: 'ForStatement',
+                  init: {
+                    type: 'VariableDeclaration',
+                    declarations: [{
+                      type: 'VariableDeclarator',
+                      id: { type: 'Identifier', name: 'i' },
+                      init: { type: 'Identifier', name: 'si' }
+                    }],
+                    kind: 'let'
+                  },
+                  test: {
+                    type: 'BinaryExpression',
+                    left: { type: 'Identifier', name: 'i' },
+                    operator: '<',
+                    right: { type: 'Identifier', name: 'ei' },
+                  },
+                  update: {
+                    type: 'AssignmentExpression',
+                    left: { type: 'Identifier', name: 'i' },
+                    operator: '+=',
+                    right: { type: 'Identifier', name: 'step' },
+                  },
+                  body: {
+                    type: 'ExpressionStatement',
+                    expression: {
+                      type: 'YieldExpression',
+                      argument: { type: 'Identifier', name: 'i' }
+                    }
+                  }
+                }]
+              }
+            }]
+          }
+        },
+        arguments: [startIndex, endIndex, step]
+      };
 
-      if (me) { // we're in a arr[start:end:step] case, we'll transform this expression
-        if (me.property !== node) throw new Error('this scenario should not happen');
-        const expr = {
-          type: 'CallExpression',
-          callee: {
-            type: 'MemberExpression',
-            object: me.object,
-            property: { type: 'Identifier', name: '__slice' }
-          },
-          arguments: [startIndex, endIndex, node.step]
-        }
-        const meParent = ancestors[ancestors.indexOf(me) + 1];
-        if (!meParent) throw new Error('no parent, cannot replace node');
-
-        replaceNode(meParent, me, expr);
-        needObject__slice = true;
-      } else {
-        const expr = {
-          type: 'CallExpression',
-          callee: { type: 'Identifier', name: 'Slice' },
-          arguments: [startIndex, endIndex, node.step]
-        };
-
-        replaceNode(ancestors[1], node, expr);
-      }
-      base.SliceExpression(node, ancestors, c);
+      replaceNode(ancestors[1], node, expr);
     }
   }, base);
 
-  return `${SliceStr}${needObject__slice ? Object__sliceStr : ''}${recast.print(root).code}`;
+  return recast.print(root).code;
 }

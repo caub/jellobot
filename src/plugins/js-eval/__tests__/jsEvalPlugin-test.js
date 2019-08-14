@@ -101,12 +101,12 @@ describe('jsEvalPlugin', () => {
   });
 
   it('handles slice notation', async () => {
-    const output = await testEval('f> [1,2,3][0:2]');
+    const output = await testEval('f> [1,2,3][:2]');
     expect(output).toEqual(`(okay) [ 1, 2 ]`);
   });
 
   it('handles slice notation', async () => {
-    const output = await testEval('f> let end=2; Array.from(0:end:-1)');
-    expect(output).toEqual(`(okay) [ 1, 0 ]`);
+    const output = await testEval('f> let end=2; Array.from(0:end)');
+    expect(output).toEqual(`(okay) [ 0, 1 ]`);
   });
 });

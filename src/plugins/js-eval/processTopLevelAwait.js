@@ -1,11 +1,12 @@
 const babelParser = require('@babel/parser');
+const babelGenerator = require('@babel/generator').default;
 const babelTraverse = require('@babel/traverse').default;
 const { parserPlugins } = require('./babelPlugins');
 
 /**
  * 
  * @param {string} src 
- * @return {object} ast
+ * @return {string}
  */
 function processTopLevelAwait(src) {
   let root;
@@ -69,28 +70,21 @@ function processTopLevelAwait(src) {
   };
 
   const iiafe = {
-    type: 'Program',
-    sourceType: 'script',
-    body: [{
-      type: 'ExpressionStatement',
-      expression: {
-        type: 'CallExpression',
-        callee: {
-          type: 'ArrowFunctionExpression',
-          async: true,
-          params: [],
-          body: {
-            type: 'BlockStatement',
-            body: root.program.body
-          },
-        },
-        arguments: []
-      }
-    }],
+    type: 'CallExpression',
+    callee: {
+      type: 'ArrowFunctionExpression',
+      async: true,
+      params: [],
+      body: {
+        type: 'BlockStatement',
+        body: root.program.body
+      },
+    },
+    arguments: []
   };
-  // const iiafe = t.program([t.expressionStatement(t.callExpression(t.arrowFunctionExpression([], t.blockStatement(root.program.body)), []))]) // with @babel/types
+  // const iiafe = t.callExpression(t.arrowFunctionExpression([], t.blockStatement(root.program.body)), []) // with @babel/types
 
-  return iiafe;
+  return babelGenerator(iiafe).code;
 }
 
 module.exports = processTopLevelAwait;

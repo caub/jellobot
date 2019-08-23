@@ -1,6 +1,5 @@
 const cp = require('child_process');
 const babel = require('@babel/core');
-const babelGenerator = require('@babel/generator').default;
 const jsEval = require('./jsEval');
 const processTopLevelAwait = require('./processTopLevelAwait');
 const { transformPlugins } = require('./babelPlugins');
@@ -22,19 +21,12 @@ const jsEvalPlugin = async ({ mentionUser, respond, message, selfConfig = {} }) 
 
   const hasMaybeTLA = /\bawait\b/.test(code);
 
-  if (mode === 'b' && !hasMaybeTLA) {
-    code = (await babel.transformAsync(code, { plugins: transformPlugins })).code;
+  if (hasMaybeTLA) { // there's maybe a TLA await, if not `code` stays the same
+    code = processTopLevelAwait(code) || code;
   }
 
-  if (hasMaybeTLA) { // there's maybe a TLA await
-    const iiafe = processTopLevelAwait(code);
-    if (iiafe) { // there's a TLA
-      if (mode === 'b') {
-        code = (await babel.transformFromAstAsync(iiafe, code, { plugins: transformPlugins })).code;
-      } else {
-        code = babelGenerator(iiafe).code;
-      }
-    }
+  if (mode === 'b') {
+    code = (await babel.transformAsync(code, { plugins: transformPlugins })).code;
   }
 
   try {

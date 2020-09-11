@@ -29,6 +29,17 @@ describe('jsEvalPlugin', () => {
     expect(output3).toEqual(`(okay) test`);
   });
 
+  it('tweaks booleans', async () => {
+    const output = await testEval('n> console.log(true, new Boolean(false))');
+    expect(output).toEqual('(okay) true [Boolean: false]'); // it doesn't work with console
+
+    const output2 = await testEval('n> [true, false, new Boolean(true), new Boolean(false)]');
+    expect(output2).toEqual('(okay) [ yea, nop, [Boolean: yea], [Boolean: nop] ]');
+
+    const output3 = await testEval('n> let o={foo: [true], bar: {value: false}}; o.value=o;  o');
+    expect(output3).toEqual('(okay) <ref *1> { foo: [ yea ], bar: { value: nop }, value: [Circular *1] }');
+  });
+
   it(`errors when it should`, async () => {
     const output = await testEval('n> 2++2');
     expect(output).toEqual(
